@@ -12,6 +12,36 @@
 #include <QVBoxLayout>
 #include <QPushButton>
 
+void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
+                           const std::queue<double>& timeQueue,
+                           QLineSeries* torqueSeries,
+                           const double start_plot_time,
+                           const double end_plot_time)
+{
+    std::queue<double> temp_torque = torqueQueue;  // copy queue
+    std::queue<double> temp_time = timeQueue;  // copy queue
+
+    torqueSeries->clear();  // optional: clear previous data
+
+    int index = 0;
+
+    // Append data to the series from queue every 50 times, and delete data from the queue every step
+    while (!temp_torque.empty())
+    {
+        double curr_time = temp_time.front();
+        if (index % plot_data_freq == 0 && 
+            curr_time > start_plot_time && 
+            curr_time < end_plot_time) {
+            torqueSeries->append(temp_time.front(), temp_torque.front());
+        } else if (curr_time == end_plot_time) {
+            return;
+        }
+        temp_torque.pop();
+        temp_time.pop();
+        index++;
+    }
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent) //Initialize base class
     , ui(new Ui::MainWindow), //Initialize UI Pointer
@@ -44,7 +74,7 @@ MainWindow::MainWindow(QWidget *parent)
     axisX = new QValueAxis;
     axisX->setTitleText("Time (s)");
     axisX->setLabelFormat("%.2f");
-    //axisX->setRange(0,10); //Initial Range
+    axisX->setRange(0, 10); //Initial Range
 
     axisY = new QValueAxis;
     axisY->setTitleText("Torque (Actual)");
@@ -122,7 +152,7 @@ void MainWindow::togglePlot()
         last_index = shm_ptr->write_index;
         first_timestamp = 0;
 
-        timer->start(10);  // adjust frequency
+        timer->start(plot_refresh_freq);  // adjust plot refresh frequency
         startButton->setText("Stop Torque Plot");
 
     } else {
@@ -142,39 +172,52 @@ void MainWindow::updatePlot()
 {
     if (!shm_ptr) return;
 
-    // Read the data from the buffer
-    uint32_t current_index = shm_ptr->write_index; //current_index is total samples written by the controller so far
-    if (current_index == 0) return;  // no data yet
+    uint32_t current_index = shm_ptr->write_index;
+    if (current_index == 0) return;
 
     double last_time_sec = 0.0;
 
-    // Append all new samples that haven't been plotted yet
     while (last_index < current_index)
     {
-        // Fetch the sample from the circular buffer (%BUFFER_SIZE wraps around if the controller has overwritten old samples)
         MotorSample &s = shm_ptr->buffer[last_index % BUFFER_SIZE];
 
-        //Record the timestamp for the VERY FIRST sample plotted (This becomes the time-origin x = 0 on the plot)
         if (first_timestamp == 0)
             first_timestamp = s.timestamp;
 
-        last_time_sec = (s.timestamp - first_timestamp) * 1e-9; //Convert ns to s for plotting
-        axisX->setRange(0, last_time_sec); // expand to include new points
+        last_time_sec = (s.timestamp - first_timestamp) * 1e-9;
 
-        torqueSeries->append(last_time_sec, s.torque_actual); //Append the new data to the chart
+        // torqueSeries->append(last_time_sec, s.torque_actual);
+        time_buffer.push(last_time_sec);
+        torque_buffer.push(s.torque_actual);
 
-        // qDebug() << "Timestamp:" << s.timestamp
-        //          << "Torque:" << s.torque_actual;
+        if (torque_buffer.size() > BUFFER_SIZE) {
+            time_buffer.pop();
+            torque_buffer.pop();
+        }
 
-        last_index++; //last index moves forward as we append samples
+        last_index++;
     }
 
-    // Limit number of points to prevent slowdown
-    if (torqueSeries->count() > 20000)
-        torqueSeries->removePoints(0, torqueSeries->count() - 20000);
+    // transfer torque buffer to torqueSeries
+    last_time_sec = time_buffer.back();
+    copyQueueToSeries(torque_buffer, time_buffer, torqueSeries, last_time_sec - WINDOW, last_time_sec);
 
-    // Force chart redraw
-    //chart->update();
+    if (torqueSeries->count() == 0)
+        return;
+
+    // ----------------------------
+    //  AXIS BEHAVIOR
+    // ----------------------------
+    if (last_time_sec <= WINDOW)
+    {
+        // First 10 seconds → fixed axis
+        axisX->setRange(0, WINDOW);
+    }
+    else
+    {
+        // After 10 seconds → sliding window
+        axisX->setRange(last_time_sec - WINDOW, last_time_sec);
+    }
 }
 
 

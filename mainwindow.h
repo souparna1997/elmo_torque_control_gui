@@ -9,6 +9,7 @@
 #include "shared_data.h" // Single Producer Single Consumer Circular Buffer
 #include <QVBoxLayout>
 #include <QPushButton>
+#include <queue>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -27,6 +28,11 @@ public:
 private slots:
     void updatePlot();
     void togglePlot();
+    void copyQueueToSeries(const std::queue<double>& torqueQueue,
+                           const std::queue<double>& timeQueue,
+                           QLineSeries* torqueSeries,
+                           const double start_plot_time = 0,
+                           const double end_plot_time = 10);
 
 private:
     Ui::MainWindow *ui;
@@ -41,12 +47,19 @@ private:
 
     uint64_t first_timestamp = 0; // member variable (Used to normalize the first sample so that the X-axis starts at 0)
     double time_sec = 0.0;   // member variable
+    const double WINDOW = 10.0;   // 10-second visible window
+    int plot_refresh_freq = 20; // Plot refresh frequency set to 50 Hz
+    const int plot_data_freq = 10; // Set plot data frequency
+
 
     QValueAxis *axisX;
     QValueAxis *axisY;
 
     QPushButton *startButton;
     QPushButton *stopButton;
+
+    std::queue<double> torque_buffer;
+    std::queue<double> time_buffer;
 
     void connectSharedMemory();
 };
