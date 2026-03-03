@@ -10,6 +10,9 @@
 #include <QVBoxLayout>
 #include <QPushButton>
 #include <queue>
+#include <QLineEdit>
+#include <QLabel>
+#include <QCheckBox>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -41,13 +44,15 @@ private:
     QLineSeries *torqueSeries;
     QChartView *chartView;
     QTimer *timer;
+    QLineEdit *windowEdit;
+    QCheckBox *autoScaleCheck;
 
     SharedMemory *shm_ptr; // pointer to the shared memory (read-only on GUI side)
     uint32_t last_index; // Tracks the last sample that has been plotted
 
     uint64_t first_timestamp = 0; // member variable (Used to normalize the first sample so that the X-axis starts at 0)
     double time_sec = 0.0;   // member variable
-    const double WINDOW = 10.0;   // 10-second visible window
+    double WINDOW = 10.0;   // 10-second visible window
     int plot_refresh_freq = 20; // Plot refresh frequency set to 50 Hz
     const int plot_data_freq = 10; // Set plot data frequency
 

@@ -11,6 +11,7 @@
 #include "shared_data.h"
 #include <QVBoxLayout>
 #include <QPushButton>
+#include <QCheckBox>
 
 void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
                            const std::queue<double>& timeQueue,
@@ -92,6 +93,9 @@ MainWindow::MainWindow(QWidget *parent)
     //Create chart view (widget that displays chart)
     chartView = new QChartView(chart);
     chartView->setRenderHint(QPainter::Antialiasing);
+    chartView->setRubberBand(QChartView::RectangleRubberBand);
+    chartView->setInteractive(true);
+    //chartView->setDragMode(QGraphicsView::ScrollHandDrag);
 
     layout->addWidget(chartView);
 
@@ -106,6 +110,43 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Connect start Button
     connect(startButton, &QPushButton::clicked, this, &MainWindow::togglePlot);
+
+
+    // Create the Input box for x -axis initial range ----------------------------------------------------------------
+
+    QHBoxLayout *controlLayout = new QHBoxLayout;
+
+    QLabel *label = new QLabel("Time Window (sec):");
+    windowEdit = new QLineEdit("10");
+    windowEdit->setFixedWidth(80);
+
+    controlLayout->addWidget(label);
+    controlLayout->addWidget(windowEdit);
+    controlLayout->addStretch();
+
+    layout->addLayout(controlLayout);
+
+    connect(windowEdit, &QLineEdit::editingFinished, this, [=]()
+        {
+            bool ok;
+            double value = windowEdit->text().toDouble(&ok);
+
+            if (ok && value > 0)
+            {
+                WINDOW = value;
+            }
+            else
+            {
+                windowEdit->setText(QString::number(WINDOW));
+            }
+        });
+
+    // Add Auto-scale check-box for Y - axis
+
+    autoScaleCheck = new QCheckBox("Auto Scale Y");
+    autoScaleCheck->setChecked(true);
+    controlLayout->addWidget(autoScaleCheck);
+    
 }
 
 void MainWindow::connectSharedMemory()
@@ -162,8 +203,16 @@ void MainWindow::togglePlot()
 
         //Clear PLot on Stop
         torqueSeries->clear();
+
+        //Sync index to latest controller position
         last_index = shm_ptr->write_index;
+
+        //Reset time reference
         first_timestamp = 0;
+
+        // Clear buffers
+        while (!time_buffer.empty()) time_buffer.pop();
+        while (!torque_buffer.empty()) torque_buffer.pop();
     }
 }
 
@@ -218,6 +267,28 @@ void MainWindow::updatePlot()
         // After 10 seconds → sliding window
         axisX->setRange(last_time_sec - WINDOW, last_time_sec);
     }
+
+    // AutoScale the Y-Axis
+    if (autoScaleCheck->isChecked() && torqueSeries->count() > 0)
+        {
+            qreal minY = std::numeric_limits<qreal>::max();
+            qreal maxY = std::numeric_limits<qreal>::lowest();
+
+            const auto points = torqueSeries->points();
+            for (const QPointF &p : points)
+            {
+                if (p.y() < minY) minY = p.y();
+                if (p.y() > maxY) maxY = p.y();
+            }
+
+            // Add 10% padding so it doesn't hug the borders
+            qreal padding = (maxY - minY) * 0.1;
+
+            if (padding == 0)
+                padding = 1.0;  // avoid flat-line collapse
+
+            axisY->setRange(minY - padding, maxY + padding);
+        }
 }
 
 
