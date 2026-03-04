@@ -12,6 +12,11 @@
 #include <QVBoxLayout>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
+#include <QDir>
 
 void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
                            const std::queue<double>& timeQueue,
@@ -61,7 +66,14 @@ MainWindow::MainWindow(QWidget *parent)
     startButton = new QPushButton("Start Torque Plot");
     startButton->setCheckable(true);
 
-    layout->addWidget(startButton);
+    //Create Export Button
+    exportButton = new QPushButton("Export CSV");
+
+    buttonLayout->addWidget(startButton);
+    buttonLayout->addWidget(exportButton);
+    buttonLayout->addStretch();
+
+    layout->addLayout(buttonLayout);
 
     // Create line series for plotting
     torqueSeries = new QLineSeries();
@@ -141,11 +153,14 @@ MainWindow::MainWindow(QWidget *parent)
             }
         });
 
+    
     // Add Auto-scale check-box for Y - axis
-
     autoScaleCheck = new QCheckBox("Auto Scale Y");
     autoScaleCheck->setChecked(true);
     controlLayout->addWidget(autoScaleCheck);
+
+    connect(exportButton, &QPushButton::clicked,
+        this, &MainWindow::exportCSV);
     
 }
 
@@ -196,6 +211,12 @@ void MainWindow::togglePlot()
         timer->start(plot_refresh_freq);  // adjust plot refresh frequency
         startButton->setText("Stop Torque Plot");
 
+        // Clear previous session (WHEN START IS PRESSED)
+        session_time_log.clear();
+        session_torque_log.clear();
+
+isLogging = true;
+
     } else {
         qDebug() << "Plotting stopped";
         timer->stop();
@@ -213,6 +234,9 @@ void MainWindow::togglePlot()
         // Clear buffers
         while (!time_buffer.empty()) time_buffer.pop();
         while (!torque_buffer.empty()) torque_buffer.pop();
+
+        //WHEN STOP IS PRESSED
+        isLogging = false;
     }
 }
 
@@ -245,6 +269,13 @@ void MainWindow::updatePlot()
         }
 
         last_index++;
+
+        //Log data into memory while plotting
+        if (isLogging){
+            session_time_log.push_back(last_time_sec);
+            session_torque_log.push_back(s.torque_actual);
+        }
+    
     }
 
     // transfer torque buffer to torqueSeries
@@ -289,6 +320,51 @@ void MainWindow::updatePlot()
 
             axisY->setRange(minY - padding, maxY + padding);
         }
+}
+
+//Implement export from the session log
+void MainWindow::exportCSV()
+{
+    if (session_time_log.empty())
+        return;
+
+    // Get current working directory
+    QDir dir (QDir::currentPath());
+
+    //Create logs folder if it doesn't exist
+    if (!dir.exists("logs")){
+        dir.mkdir("logs");
+    }
+
+    //Go into logs folder
+    dir.cd("logs");
+
+    QString fileName =
+        "torque_" +
+        QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") +
+        ".csv";
+
+
+    QString fullPath = dir.filePath(fileName);
+
+    QFile file(fullPath);
+    if (fileName.isEmpty())
+        return;
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return;
+
+    QTextStream out(&file);
+
+    out << "Time (s),Torque (Nm)\n";
+
+    for (size_t i = 0; i < session_time_log.size(); ++i)
+    {
+        out << session_time_log[i] << ","
+            << session_torque_log[i] << "\n";
+    }
+
+    file.close();
 }
 
 

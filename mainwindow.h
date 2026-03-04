@@ -13,6 +13,10 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QCheckBox>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -36,6 +40,7 @@ private slots:
                            QLineSeries* torqueSeries,
                            const double start_plot_time = 0,
                            const double end_plot_time = 10);
+    void exportCSV();
 
 private:
     Ui::MainWindow *ui;
@@ -62,9 +67,15 @@ private:
 
     QPushButton *startButton;
     QPushButton *stopButton;
+    QPushButton *exportButton;
 
     std::queue<double> torque_buffer;
     std::queue<double> time_buffer;
+
+    std::vector<double> session_time_log;
+    std::vector<double> session_torque_log;
+
+    bool isLogging = false;
 
     void connectSharedMemory();
 };
