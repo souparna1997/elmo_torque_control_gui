@@ -17,17 +17,18 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDir>
+#include <QComboBox>
 
 void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
                            const std::queue<double>& timeQueue,
-                           QLineSeries* torqueSeries,
+                           QLineSeries* torqueActualSeries,
                            const double start_plot_time,
                            const double end_plot_time)
 {
     std::queue<double> temp_torque = torqueQueue;  // copy queue
     std::queue<double> temp_time = timeQueue;  // copy queue
 
-    torqueSeries->clear();  // optional: clear previous data
+    torqueActualSeries->clear();  // optional: clear previous data
 
     int index = 0;
 
@@ -38,7 +39,7 @@ void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
         if (index % plot_data_freq == 0 && 
             curr_time > start_plot_time && 
             curr_time < end_plot_time) {
-            torqueSeries->append(temp_time.front(), temp_torque.front());
+            torqueActualSeries->append(temp_time.front(), temp_torque.front());
         } else if (curr_time == end_plot_time) {
             return;
         }
@@ -76,11 +77,13 @@ MainWindow::MainWindow(QWidget *parent)
     layout->addLayout(buttonLayout);
 
     // Create line series for plotting
-    torqueSeries = new QLineSeries();
+    torqueActualSeries = new QLineSeries();
+    torqueActualSeries->setName("Torque Actual");
+  
 
     // Create chart and attach series
     chart = new QChart();
-    chart->addSeries(torqueSeries);
+    chart->addSeries(torqueActualSeries);
     chart->setTitle("Motor Torque (Actual)");
 
     // Create axes
@@ -99,8 +102,8 @@ MainWindow::MainWindow(QWidget *parent)
     //Add axes to chart and attach series
     chart->addAxis(axisX, Qt::AlignBottom);
     chart->addAxis(axisY, Qt::AlignLeft);
-    torqueSeries->attachAxis(axisX);
-    torqueSeries->attachAxis(axisY);
+    torqueActualSeries->attachAxis(axisX);
+    torqueActualSeries->attachAxis(axisY);
 
     //Create chart view (widget that displays chart)
     chartView = new QChartView(chart);
@@ -136,7 +139,7 @@ MainWindow::MainWindow(QWidget *parent)
     controlLayout->addWidget(windowEdit);
     controlLayout->addStretch();
 
-    layout->addLayout(controlLayout);
+    //layout->addLayout(controlLayout);
 
     connect(windowEdit, &QLineEdit::editingFinished, this, [=]()
         {
@@ -161,6 +164,46 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(exportButton, &QPushButton::clicked,
         this, &MainWindow::exportCSV);
+
+    // Create a dropdown to select the joint you want to plot
+    jointSelector = new QComboBox(this);
+    controlLayout->addWidget(new QLabel("Select Joint:"));
+    controlLayout->addWidget(jointSelector);
+
+    layout->addLayout(controlLayout);
+
+    // Connect selection change
+    connect(jointSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this,
+            [this](int){
+                if (jointSelector->count() == 0)
+                    return;
+                selected_joint = jointSelector->currentData().toInt();
+            });
+    
+    // Connect shared memory to show active joints
+    connectSharedMemory();
+    // Update joint selection dropdown based on active joints
+        uint8_t mask = shm_ptr->buffer[(shm_ptr->write_index-1) % BUFFER_SIZE].active_joint_mask;
+        qDebug() << "Active mask:" << mask;
+        if (mask != current_mask) {
+            jointSelector->clear();
+            for (int j = 0; j < NUM_JOINTS; j++) {
+                if (mask & (1 << j)) {
+                    jointSelector->addItem(QString("Joint %1").arg(j+1), j);
+                }
+            }
+            current_mask = mask;
+
+            if (jointSelector->count() > 0){
+                selected_joint = jointSelector->currentData().toInt();
+            }
+        }
+        if (!shm_ptr) {
+            qDebug() << "Shared memory not available!";
+            return;
+        }
     
 }
 
@@ -197,7 +240,7 @@ void MainWindow::togglePlot()
 {
     if (startButton->isChecked()) {
         qDebug() << "Plotting started";
-        connectSharedMemory();
+        //connectSharedMemory();
 
         if (!shm_ptr) {
             qDebug() << "Shared memory not available!";
@@ -206,6 +249,7 @@ void MainWindow::togglePlot()
         }
 
         last_index = shm_ptr->write_index;
+        //qDebug() << "last_index: " << last_index;
         first_timestamp = 0;
 
         timer->start(plot_refresh_freq);  // adjust plot refresh frequency
@@ -215,7 +259,7 @@ void MainWindow::togglePlot()
         session_time_log.clear();
         session_torque_log.clear();
 
-isLogging = true;
+        isLogging = true;
 
     } else {
         qDebug() << "Plotting stopped";
@@ -223,7 +267,7 @@ isLogging = true;
         startButton->setText("Start Torque Plot");
 
         //Clear PLot on Stop
-        torqueSeries->clear();
+        torqueActualSeries->clear();
 
         //Sync index to latest controller position
         last_index = shm_ptr->write_index;
@@ -233,8 +277,11 @@ isLogging = true;
 
         // Clear buffers
         while (!time_buffer.empty()) time_buffer.pop();
-        while (!torque_buffer.empty()) torque_buffer.pop();
-
+        for (int j=0; j<NUM_JOINTS; j++){
+            while (!torque_actual_buffer[j].empty()) {
+                torque_actual_buffer[j].pop();
+            }
+        }
         //WHEN STOP IS PRESSED
         isLogging = false;
     }
@@ -259,13 +306,18 @@ void MainWindow::updatePlot()
 
         last_time_sec = (s.timestamp - first_timestamp) * 1e-9;
 
-        // torqueSeries->append(last_time_sec, s.torque_actual);
+        // torqueActualSeries->append(last_time_sec, s.torque_actual);
         time_buffer.push(last_time_sec);
-        torque_buffer.push(s.torque_actual);
 
-        if (torque_buffer.size() > BUFFER_SIZE) {
+        for (int j = 0; j < NUM_JOINTS; j++) {
+            if (s.active_joint_mask & (1 << j)) {
+                torque_actual_buffer[j].push(s.torque_actual[j]);
+                if (torque_actual_buffer[j].size() > BUFFER_SIZE)
+                    torque_actual_buffer[j].pop();
+            }
+        }
+        if (time_buffer.size() > BUFFER_SIZE){
             time_buffer.pop();
-            torque_buffer.pop();
         }
 
         last_index++;
@@ -273,16 +325,16 @@ void MainWindow::updatePlot()
         //Log data into memory while plotting
         if (isLogging){
             session_time_log.push_back(last_time_sec);
-            session_torque_log.push_back(s.torque_actual);
+            session_torque_log.push_back(s.torque_actual[selected_joint]);
         }
     
     }
 
-    // transfer torque buffer to torqueSeries
+    // transfer torque buffer to torqueActualSeries
     last_time_sec = time_buffer.back();
-    copyQueueToSeries(torque_buffer, time_buffer, torqueSeries, last_time_sec - WINDOW, last_time_sec);
+    copyQueueToSeries(torque_actual_buffer[selected_joint], time_buffer, torqueActualSeries, last_time_sec - WINDOW, last_time_sec);
 
-    if (torqueSeries->count() == 0)
+    if (torqueActualSeries->count() == 0)
         return;
 
     // ----------------------------
@@ -300,12 +352,12 @@ void MainWindow::updatePlot()
     }
 
     // AutoScale the Y-Axis
-    if (autoScaleCheck->isChecked() && torqueSeries->count() > 0)
+    if (autoScaleCheck->isChecked() && torqueActualSeries->count() > 0)
         {
             qreal minY = std::numeric_limits<qreal>::max();
             qreal maxY = std::numeric_limits<qreal>::lowest();
 
-            const auto points = torqueSeries->points();
+            const auto points = torqueActualSeries->points();
             for (const QPointF &p : points)
             {
                 if (p.y() < minY) minY = p.y();
@@ -339,8 +391,7 @@ void MainWindow::exportCSV()
     //Go into logs folder
     dir.cd("logs");
 
-    QString fileName =
-        "torque_" +
+    QString fileName = "joint_" + QString::number(selected_joint+1) + "torque_" +
         QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") +
         ".csv";
 
@@ -356,12 +407,11 @@ void MainWindow::exportCSV()
 
     QTextStream out(&file);
 
-    out << "Time (s),Torque (Nm)\n";
+    out << "Time (s),Joint, Actual Torque (Nm)\n";
 
     for (size_t i = 0; i < session_time_log.size(); ++i)
     {
-        out << session_time_log[i] << ","
-            << session_torque_log[i] << "\n";
+        out << session_time_log[i] << "," << (selected_joint + 1) << "," << session_torque_log[i] << "\n";
     }
 
     file.close();
