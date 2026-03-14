@@ -46,9 +46,14 @@ private slots:
 private:
     Ui::MainWindow *ui;
 
-    QChart *chart;
-    QLineSeries *torqueActualSeries;
-    QChartView *chartView;
+    std::vector<QChart*> charts;
+    std::vector<QChartView*> chartViews;
+    std::vector<std::vector<QLineSeries*>> series;
+    std::vector<QString> series_names = {
+        "Torque Actual",
+        "Torque Command"
+        //Add more later
+    };
     QTimer *timer;
     QLineEdit *windowEdit;
     QCheckBox *autoScaleCheck;
@@ -66,19 +71,20 @@ private:
     uint8_t selected_joint = 0; // currently selected joint
 
 
-    QValueAxis *axisX;
-    QValueAxis *axisY;
+    std::vector<QValueAxis*> axisX;
+    std::vector<QValueAxis*> axisY;
 
     QPushButton *startButton;
     QPushButton *stopButton;
     QPushButton *exportButton;
 
-    std::queue<double> torque_actual_buffer[NUM_JOINTS];
-    std::queue<double> torque_commanded_buffer[NUM_JOINTS];
+    // Per joint per series buffer
+    std::vector<std::queue<double>> joint_series_buffers[NUM_JOINTS];
     std::queue<double> time_buffer;
 
+    // Logging session dat for export
     std::vector<double> session_time_log;
-    std::vector<double> session_torque_log;
+    std::vector<std::vector<double>> session_log_series;
 
     bool isLogging = false;
 

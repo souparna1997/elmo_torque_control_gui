@@ -19,31 +19,31 @@
 #include <QDir>
 #include <QComboBox>
 
-void MainWindow::copyQueueToSeries(const std::queue<double>& torqueQueue,
+void MainWindow::copyQueueToSeries(const std::queue<double>& dataQueue,
                            const std::queue<double>& timeQueue,
-                           QLineSeries* torqueActualSeries,
+                           QLineSeries* series,
                            const double start_plot_time,
                            const double end_plot_time)
 {
-    std::queue<double> temp_torque = torqueQueue;  // copy queue
+    std::queue<double> temp_data = dataQueue;  // copy queue
     std::queue<double> temp_time = timeQueue;  // copy queue
 
-    torqueActualSeries->clear();  // optional: clear previous data
+    series->clear();  // optional: clear previous data
 
     int index = 0;
 
     // Append data to the series from queue every 50 times, and delete data from the queue every step
-    while (!temp_torque.empty())
+    while (!temp_data.empty())
     {
         double curr_time = temp_time.front();
         if (index % plot_data_freq == 0 && 
             curr_time > start_plot_time && 
             curr_time < end_plot_time) {
-            torqueActualSeries->append(temp_time.front(), temp_torque.front());
+            series->append(temp_time.front(), temp_data.front());
         } else if (curr_time == end_plot_time) {
             return;
         }
-        temp_torque.pop();
+        temp_data.pop();
         temp_time.pop();
         index++;
     }
@@ -64,7 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
     // Create Start and Stop Button
     QHBoxLayout *buttonLayout  = new QHBoxLayout;
 
-    startButton = new QPushButton("Start Torque Plot");
+    startButton = new QPushButton("Start Plot");
     startButton->setCheckable(true);
 
     //Create Export Button
@@ -76,43 +76,60 @@ MainWindow::MainWindow(QWidget *parent)
 
     layout->addLayout(buttonLayout);
 
-    // Create line series for plotting
-    torqueActualSeries = new QLineSeries();
-    torqueActualSeries->setName("Torque Actual");
-  
+    // Create chart
+    for (int i = 0; i < series_names.size(); ++i)
+    {
+        QChart* chart = new QChart();
+        chart->setTitle(series_names[i]);
 
-    // Create chart and attach series
-    chart = new QChart();
-    chart->addSeries(torqueActualSeries);
-    chart->setTitle("Motor Torque (Actual)");
+        QLineSeries* s = new QLineSeries();
+        s->setName(series_names[i]);
 
-    // Create axes
-    axisX = new QValueAxis;
-    axisX->setTitleText("Time (s)");
-    axisX->setLabelFormat("%.2f");
-    axisX->setRange(0, 10); //Initial Range
+        chart->addSeries(s);
 
-    axisY = new QValueAxis;
-    axisY->setTitleText("Torque (Actual)");
-    axisY->setLabelFormat("%d");
-    axisY->setRange(-500, 500);
-    axisY->setTickInterval(100);
-    axisY->setMinorTickCount(4);
+        // Create axes
+        QValueAxis* ax = new QValueAxis;
+        ax->setTitleText("Time (s)");
+        ax->setLabelFormat("%.2f");
+        ax->setRange(0, WINDOW); //Initial Range
 
-    //Add axes to chart and attach series
-    chart->addAxis(axisX, Qt::AlignBottom);
-    chart->addAxis(axisY, Qt::AlignLeft);
-    torqueActualSeries->attachAxis(axisX);
-    torqueActualSeries->attachAxis(axisY);
+        QValueAxis* ay = new QValueAxis;
+        ay->setTitleText(series_names[i]);
+        ay->setRange(-500,500);
+        ay->setTickInterval(100);
+        ay->setMinorTickCount(4);
+
+        //Add axes to chart and attach series
+        chart->addAxis(ax, Qt::AlignBottom);
+        chart->addAxis(ay, Qt::AlignLeft);
+
+        s->attachAxis(ax);
+        s->attachAxis(ay);
+
+        charts.push_back(chart);
+        axisX.push_back(ax);
+        axisY.push_back(ay);
+
+        series.push_back({s});   // series[chart][line]
+    }
+
+    //Initialize joint_series_buffers and session_log_series
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        joint_series_buffers[j].resize(series_names.size());
+    }
+
+    session_log_series.resize(series_names.size());
 
     //Create chart view (widget that displays chart)
-    chartView = new QChartView(chart);
-    chartView->setRenderHint(QPainter::Antialiasing);
-    chartView->setRubberBand(QChartView::RectangleRubberBand);
-    chartView->setInteractive(true);
-    //chartView->setDragMode(QGraphicsView::ScrollHandDrag);
+    for (auto chart : charts)
+    {
+        QChartView* view = new QChartView(chart);
+        view->setRenderHint(QPainter::Antialiasing);
+        view->setRubberBand(QChartView::RectangleRubberBand);
 
-    layout->addWidget(chartView);
+        chartViews.push_back(view);
+        layout->addWidget(view);
+    }
 
     //Set chartView as the central widget of main window
     setCentralWidget(central);
@@ -257,7 +274,7 @@ void MainWindow::togglePlot()
 
         // Clear previous session (WHEN START IS PRESSED)
         session_time_log.clear();
-        session_torque_log.clear();
+        for (auto &vec : session_log_series) vec.clear();
 
         isLogging = true;
 
@@ -267,7 +284,12 @@ void MainWindow::togglePlot()
         startButton->setText("Start Torque Plot");
 
         //Clear PLot on Stop
-        torqueActualSeries->clear();
+    for (auto &chart_series : series)
+    {
+        for (auto s : chart_series){
+            s->clear();
+        }
+    }
 
         //Sync index to latest controller position
         last_index = shm_ptr->write_index;
@@ -277,9 +299,9 @@ void MainWindow::togglePlot()
 
         // Clear buffers
         while (!time_buffer.empty()) time_buffer.pop();
-        for (int j=0; j<NUM_JOINTS; j++){
-            while (!torque_actual_buffer[j].empty()) {
-                torque_actual_buffer[j].pop();
+        for (int j = 0; j < NUM_JOINTS; j++) {
+            for (int k = 0; k < series_names.size(); ++k) {
+                while (!joint_series_buffers[j][k].empty()) joint_series_buffers[j][k].pop();
             }
         }
         //WHEN STOP IS PRESSED
@@ -311,9 +333,13 @@ void MainWindow::updatePlot()
 
         for (int j = 0; j < NUM_JOINTS; j++) {
             if (s.active_joint_mask & (1 << j)) {
-                torque_actual_buffer[j].push(s.torque_actual[j]);
-                if (torque_actual_buffer[j].size() > BUFFER_SIZE)
-                    torque_actual_buffer[j].pop();
+                joint_series_buffers[j][0].push(s.torque_actual[j]);
+                joint_series_buffers[j][1].push(s.torque_cmd[j]);
+                for (int k = 0; k < series_names.size(); ++k) {
+                    if (joint_series_buffers[j][k].size() > BUFFER_SIZE){
+                        joint_series_buffers[j][k].pop();
+                    }
+                }
             }
         }
         if (time_buffer.size() > BUFFER_SIZE){
@@ -325,53 +351,60 @@ void MainWindow::updatePlot()
         //Log data into memory while plotting
         if (isLogging){
             session_time_log.push_back(last_time_sec);
-            session_torque_log.push_back(s.torque_actual[selected_joint]);
+            for (int k = 0; k < series_names.size(); ++k) {
+                session_log_series[k].push_back(joint_series_buffers[selected_joint][k].back());
+            }
         }
     
     }
 
     // transfer torque buffer to torqueActualSeries
     last_time_sec = time_buffer.back();
-    copyQueueToSeries(torque_actual_buffer[selected_joint], time_buffer, torqueActualSeries, last_time_sec - WINDOW, last_time_sec);
-
-    if (torqueActualSeries->count() == 0)
+    for (int k = 0; k < series_names.size(); ++k)
+        {
+            copyQueueToSeries(joint_series_buffers[selected_joint][k], time_buffer, series[k][0], last_time_sec - WINDOW, last_time_sec);
+        }
+    for (int k = 0; k < series_names.size(); ++k){
+        if (series[k][0]->count() == 0)
         return;
+    }
+    
 
     // ----------------------------
     //  AXIS BEHAVIOR
     // ----------------------------
-    if (last_time_sec <= WINDOW)
+
+    for (int i = 0; i < axisX.size(); ++i)
     {
-        // First 10 seconds → fixed axis
-        axisX->setRange(0, WINDOW);
-    }
-    else
-    {
-        // After 10 seconds → sliding window
-        axisX->setRange(last_time_sec - WINDOW, last_time_sec);
+        if (last_time_sec <= WINDOW)
+            // First 10 seconds → fixed axis
+            axisX[i]->setRange(0, WINDOW);
+        else
+            // After 10 seconds → sliding window
+            axisX[i]->setRange(last_time_sec - WINDOW, last_time_sec);
     }
 
     // AutoScale the Y-Axis
-    if (autoScaleCheck->isChecked() && torqueActualSeries->count() > 0)
-        {
-            qreal minY = std::numeric_limits<qreal>::max();
-            qreal maxY = std::numeric_limits<qreal>::lowest();
-
-            const auto points = torqueActualSeries->points();
-            for (const QPointF &p : points)
-            {
-                if (p.y() < minY) minY = p.y();
-                if (p.y() > maxY) maxY = p.y();
+    if (autoScaleCheck->isChecked()) {
+        qreal minY = std::numeric_limits<qreal>::max();
+        qreal maxY = std::numeric_limits<qreal>::lowest();
+        for (auto &chart_series : series){
+            for (auto s : chart_series) {
+                const auto points = s->points();
+                for (const QPointF &p : points) {
+                    minY = std::min(minY, p.y());
+                    maxY = std::max(maxY, p.y());
+                }
             }
-
-            // Add 10% padding so it doesn't hug the borders
-            qreal padding = (maxY - minY) * 0.1;
-
-            if (padding == 0)
-                padding = 1.0;  // avoid flat-line collapse
-
-            axisY->setRange(minY - padding, maxY + padding);
         }
+        qreal padding = (maxY - minY) * 0.1;
+        if (padding == 0) padding = 1.0;{
+            for (auto ay : axisY)
+            {
+                ay->setRange(minY - padding, maxY + padding);
+            }
+        }
+    }
 }
 
 //Implement export from the session log
@@ -407,11 +440,20 @@ void MainWindow::exportCSV()
 
     QTextStream out(&file);
 
-    out << "Time (s),Joint, Actual Torque (Nm)\n";
+    // CSV header
+    out << "Time (s),Joint";
+    for (const auto& name : series_names) out << "," << name;
+    out << "\n";
 
+    // Each row
     for (size_t i = 0; i < session_time_log.size(); ++i)
     {
-        out << session_time_log[i] << "," << (selected_joint + 1) << "," << session_torque_log[i] << "\n";
+        out << session_time_log[i] << "," << (selected_joint+1);
+        for (size_t k = 0; k < session_log_series.size(); ++k)
+        {
+            out << "," << session_log_series[k][i];
+        }
+        out << "\n";
     }
 
     file.close();
